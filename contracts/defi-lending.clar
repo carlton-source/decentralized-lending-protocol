@@ -128,21 +128,26 @@
 )
 
 (define-read-only (is-liquidatable (loan-id uint))
-  (match (get-loan-details loan-id)
-    loan-data (let (
-      (updated-interest (+ (get interest-accumulated loan-data) 
-                          (calculate-interest 
-                            (get loan-amount loan-data) 
-                            (- (get-current-stacks-block-height) (get last-interest-height loan-data))
-                          )))
-      (collateral-ratio (calculate-collateral-ratio 
-                          (get collateral-amount loan-data) 
-                          (get loan-amount loan-data) 
-                          updated-interest))
-    )
-      (< collateral-ratio (* LIQUIDATION-THRESHOLD u10))
-    )
+  ;; Check if loan ID is valid first
+  (if (or (> loan-id (var-get loan-nonce)) (is-none (get-loan-details loan-id)))
     false
+    (match (get-loan-details loan-id)
+      loan-data 
+        (let (
+          (updated-interest (+ (get interest-accumulated loan-data) 
+                              (calculate-interest 
+                                (get loan-amount loan-data) 
+                                (- (get-current-stacks-block-height) (get last-interest-height loan-data))
+                              )))
+          (collateral-ratio (calculate-collateral-ratio 
+                              (get collateral-amount loan-data) 
+                              (get loan-amount loan-data) 
+                              updated-interest))
+        )
+          (< collateral-ratio (* LIQUIDATION-THRESHOLD u10))
+        )
+      false
+    )
   )
 )
 
@@ -271,6 +276,7 @@
 
 ;; Update loan interest (called before any loan operation)
 (define-private (update-loan-interest (loan-id uint))
+  ;; We assume loan validation has been done before calling this private function
   (match (get-loan-details loan-id)
     loan-data (let (
       (current-height (get-current-stacks-block-height))
@@ -307,6 +313,10 @@
   (begin
     (asserts! (not (var-get paused)) ERR-NOT-AUTHORIZED)
     (asserts! (> repay-amount u0) ERR-INVALID-AMOUNT)
+    
+    ;; Validate loan ID
+    (asserts! (<= loan-id (var-get loan-nonce)) ERR-INVALID-LOAN-ID)
+    (asserts! (is-some (get-loan-details loan-id)) ERR-LOAN-NOT-FOUND)
     
     ;; Update loan interest first
     (try! (update-loan-interest loan-id))
@@ -376,6 +386,10 @@
 (define-public (liquidate (loan-id uint))
   (begin
     (asserts! (not (var-get paused)) ERR-NOT-AUTHORIZED)
+    
+    ;; Validate loan ID
+    (asserts! (<= loan-id (var-get loan-nonce)) ERR-INVALID-LOAN-ID)
+    (asserts! (is-some (get-loan-details loan-id)) ERR-LOAN-NOT-FOUND)
     
     ;; Update loan interest first
     (try! (update-loan-interest loan-id))
@@ -488,26 +502,30 @@
 
 ;; Fixed function with consistent return type
 (define-read-only (get-loan-health (loan-id uint))
-  (match (get-loan-details loan-id)
-    loan-data 
-      (let (
-        (updated-interest (+ (get interest-accumulated loan-data) 
-                           (calculate-interest 
-                             (get loan-amount loan-data) 
-                             (- (get-current-stacks-block-height) (get last-interest-height loan-data))
-                           )))
-        (collateral-ratio (calculate-collateral-ratio 
-                            (get collateral-amount loan-data) 
-                            (get loan-amount loan-data) 
-                            updated-interest))
-      )
-        (ok {
-          collateral-ratio: collateral-ratio,
-          liquidation-threshold: (* LIQUIDATION-THRESHOLD u10),
-          is-healthy: (>= collateral-ratio (* LIQUIDATION-THRESHOLD u10))
-        })
-      )
+  ;; First validate the loan ID 
+  (if (or (> loan-id (var-get loan-nonce)) (is-none (get-loan-details loan-id)))
     (err ERR-LOAN-NOT-FOUND)
+    (match (get-loan-details loan-id)
+      loan-data 
+        (let (
+          (updated-interest (+ (get interest-accumulated loan-data) 
+                             (calculate-interest 
+                               (get loan-amount loan-data) 
+                               (- (get-current-stacks-block-height) (get last-interest-height loan-data))
+                             )))
+          (collateral-ratio (calculate-collateral-ratio 
+                              (get collateral-amount loan-data) 
+                              (get loan-amount loan-data) 
+                              updated-interest))
+        )
+          (ok {
+            collateral-ratio: collateral-ratio,
+            liquidation-threshold: (* LIQUIDATION-THRESHOLD u10),
+            is-healthy: (>= collateral-ratio (* LIQUIDATION-THRESHOLD u10))
+          })
+        )
+      (err ERR-LOAN-NOT-FOUND)
+    )
   )
 )
 

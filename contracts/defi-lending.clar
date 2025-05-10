@@ -301,3 +301,73 @@
     ERR-LOAN-NOT-FOUND
   )
 )
+
+;; Repay loan (partial or full)
+(define-public (repay-loan (loan-id uint) (repay-amount uint))
+  (begin
+    (asserts! (not (var-get paused)) ERR-NOT-AUTHORIZED)
+    (asserts! (> repay-amount u0) ERR-INVALID-AMOUNT)
+    
+    ;; Update loan interest first
+    (try! (update-loan-interest loan-id))
+    
+    (match (get-loan-details loan-id)
+      loan-data (let (
+        (borrower (get borrower loan-data))
+        (loan-amount (get loan-amount loan-data))
+        (interest (get interest-accumulated loan-data))
+        (collateral (get collateral-amount loan-data))
+        (total-owed (+ loan-amount interest))
+        (is-full-repayment (>= repay-amount total-owed))
+        (actual-repayment (if is-full-repayment total-owed repay-amount))
+        (remaining-loan (if is-full-repayment u0 (- loan-amount (- actual-repayment interest))))
+        (remaining-interest (if is-full-repayment u0 (if (>= (- interest (- actual-repayment loan-amount)) u0) (- interest (- actual-repayment loan-amount)) u0)))
+      )
+        ;; Verify sender is the borrower
+        (asserts! (is-eq tx-sender borrower) ERR-NOT-AUTHORIZED)
+        
+        ;; Transfer repayment from sender to contract
+        (try! (stx-transfer? actual-repayment tx-sender (as-contract tx-sender)))
+        
+        (if is-full-repayment
+          (begin
+            ;; Close loan and return collateral for full repayment
+            (map-set loans
+              { loan-id: loan-id }
+              (merge loan-data {
+                loan-amount: u0,
+                interest-accumulated: u0,
+                status: "repaid"
+              })
+            )
+            
+            ;; Return collateral to user
+            (map-set user-deposits
+              borrower
+              (+ (get-user-deposit borrower) collateral)
+            )
+            
+            ;; Update total borrowed
+            (var-set total-borrowed (- (var-get total-borrowed) loan-amount))
+          )
+          (begin
+            ;; Update loan for partial repayment
+            (map-set loans
+              { loan-id: loan-id }
+              (merge loan-data {
+                loan-amount: remaining-loan,
+                interest-accumulated: remaining-interest
+              })
+            )
+            
+            ;; Update total borrowed
+            (var-set total-borrowed (- (var-get total-borrowed) (- loan-amount remaining-loan)))
+          )
+        )
+        
+        (ok actual-repayment)
+      )
+      ERR-LOAN-NOT-FOUND
+    )
+  )
+)

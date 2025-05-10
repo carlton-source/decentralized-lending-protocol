@@ -46,7 +46,7 @@
 ;; Data structures
 (define-map user-deposits principal uint)
 (define-map total-deposits uint uint) ;; [height, amount]
-(define-map protocol-fees uint uint) ;; [height, amount] - Fixed: Added value type
+(define-map protocol-fees uint uint) ;; [height, amount]
 
 ;; Loan tracking
 (define-map loans 
@@ -102,7 +102,7 @@
   {
     total-collateral: (var-get total-collateral),
     total-borrowed: (var-get total-borrowed),
-    protocol-fees: (map-get? protocol-fees (get-current-stacks-block-height)), ;; Fixed: Added key for map-get
+    protocol-fees: (default-to u0 (map-get? protocol-fees (get-current-stacks-block-height))),
     loan-count: (var-get loan-nonce)
   }
 )
@@ -320,8 +320,8 @@
         (total-owed (+ loan-amount interest))
         (is-full-repayment (>= repay-amount total-owed))
         (actual-repayment (if is-full-repayment total-owed repay-amount))
-        (remaining-loan (if is-full-repayment u0 (- loan-amount (- actual-repayment interest))))
-        (remaining-interest (if is-full-repayment u0 (if (>= (- interest (- actual-repayment loan-amount)) u0) (- interest (- actual-repayment loan-amount)) u0)))
+        (remaining-loan (if is-full-repayment u0 (- loan-amount (if (>= actual-repayment interest) (- actual-repayment interest) u0))))
+        (remaining-interest (if is-full-repayment u0 (if (>= actual-repayment interest) u0 (- interest actual-repayment))))
       )
         ;; Verify sender is the borrower
         (asserts! (is-eq tx-sender borrower) ERR-NOT-AUTHORIZED)
@@ -486,25 +486,27 @@
   )
 )
 
+;; Fixed function with consistent return type
 (define-read-only (get-loan-health (loan-id uint))
   (match (get-loan-details loan-id)
-    loan-data (let (
-      (updated-interest (+ (get interest-accumulated loan-data) 
-                         (calculate-interest 
-                           (get loan-amount loan-data) 
-                           (- (get-current-stacks-block-height) (get last-interest-height loan-data))
-                         )))
-      (collateral-ratio (calculate-collateral-ratio 
-                          (get collateral-amount loan-data) 
-                          (get loan-amount loan-data) 
-                          updated-interest))
-    )
-      {
-        collateral-ratio: collateral-ratio,
-        liquidation-threshold: (* LIQUIDATION-THRESHOLD u10),
-        is-healthy: (>= collateral-ratio (* LIQUIDATION-THRESHOLD u10))
-      }
-    )
+    loan-data 
+      (let (
+        (updated-interest (+ (get interest-accumulated loan-data) 
+                           (calculate-interest 
+                             (get loan-amount loan-data) 
+                             (- (get-current-stacks-block-height) (get last-interest-height loan-data))
+                           )))
+        (collateral-ratio (calculate-collateral-ratio 
+                            (get collateral-amount loan-data) 
+                            (get loan-amount loan-data) 
+                            updated-interest))
+      )
+        (ok {
+          collateral-ratio: collateral-ratio,
+          liquidation-threshold: (* LIQUIDATION-THRESHOLD u10),
+          is-healthy: (>= collateral-ratio (* LIQUIDATION-THRESHOLD u10))
+        })
+      )
     (err ERR-LOAN-NOT-FOUND)
   )
 )

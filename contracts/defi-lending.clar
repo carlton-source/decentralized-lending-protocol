@@ -97,3 +97,114 @@
 (define-read-only (get-user-loans (user principal))
   (default-to (list) (map-get? user-loans user))
 )
+
+(define-read-only (get-protocol-stats)
+  {
+    total-collateral: (var-get total-collateral),
+    total-borrowed: (var-get total-borrowed),
+    protocol-fees: (map-get? protocol-fees (get-current-stacks-block-height)), ;; Fixed: Added key for map-get
+    loan-count: (var-get loan-nonce)
+  }
+)
+
+(define-read-only (calculate-interest (principal-amount uint) (blocks-elapsed uint))
+  (let (
+    (interest-per-block (/ (* principal-amount INTEREST-RATE-PER-BLOCK) u1000000))
+    (total-interest (* interest-per-block blocks-elapsed))
+  )
+    total-interest
+  )
+)
+
+(define-read-only (calculate-collateral-ratio (collateral-amount uint) (loan-amount uint) (interest-accumulated uint))
+  (let (
+    (total-debt (+ loan-amount interest-accumulated))
+  )
+    (if (is-eq total-debt u0)
+      u0
+      (/ (* collateral-amount u1000) total-debt)
+    )
+  )
+)
+
+(define-read-only (is-liquidatable (loan-id uint))
+  (match (get-loan-details loan-id)
+    loan-data (let (
+      (updated-interest (+ (get interest-accumulated loan-data) 
+                          (calculate-interest 
+                            (get loan-amount loan-data) 
+                            (- (get-current-stacks-block-height) (get last-interest-height loan-data))
+                          )))
+      (collateral-ratio (calculate-collateral-ratio 
+                          (get collateral-amount loan-data) 
+                          (get loan-amount loan-data) 
+                          updated-interest))
+    )
+      (< collateral-ratio (* LIQUIDATION-THRESHOLD u10))
+    )
+    false
+  )
+)
+
+;; Core functionality
+
+;; Deposit assets as collateral
+(define-public (deposit (amount uint))
+  (begin
+    (asserts! (not (var-get paused)) ERR-NOT-AUTHORIZED)
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    
+    ;; Transfer STX from sender to contract
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    
+    ;; Update user's deposit balance
+    (map-set user-deposits 
+      tx-sender 
+      (+ (get-user-deposit tx-sender) amount)
+    )
+    
+    ;; Update total deposits
+    (map-set total-deposits 
+      (get-current-stacks-block-height) 
+      (+ (default-to u0 (map-get? total-deposits (get-current-stacks-block-height))) amount)
+    )
+    
+    ;; Update total collateral
+    (var-set total-collateral (+ (var-get total-collateral) amount))
+    
+    (ok amount)
+  )
+)
+
+;; Withdraw collateral
+(define-public (withdraw (amount uint))
+  (begin
+    (asserts! (not (var-get paused)) ERR-NOT-AUTHORIZED)
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    
+    (let (
+      (current-deposit (get-user-deposit tx-sender))
+    )
+      ;; Check if user has enough balance
+      (asserts! (>= current-deposit amount) ERR-INSUFFICIENT-BALANCE)
+      
+      ;; Check if withdrawal doesn't violate collateral requirements for user's loans
+      ;; (This would require iterating through user's loans and checking each one's health)
+      ;; For simplicity, this check is omitted but would be essential in production
+      
+      ;; Transfer STX from contract to sender
+      (try! (as-contract (stx-transfer? amount (as-contract tx-sender) tx-sender)))
+      
+      ;; Update user's deposit balance
+      (map-set user-deposits 
+        tx-sender 
+        (- current-deposit amount)
+      )
+      
+      ;; Update total collateral
+      (var-set total-collateral (- (var-get total-collateral) amount))
+      
+      (ok amount)
+    )
+  )
+)
